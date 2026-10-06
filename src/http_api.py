@@ -3,7 +3,7 @@ import json
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
 from .domain import Actor, DomainError, PermissionDenied, ValidationError
@@ -12,6 +12,15 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+DISPUTES_RE = re.compile(r"^/api/records/(\d+)/disputes$")
+AMENDMENTS_RE = re.compile(r"^/api/records/(\d+)/amendments$")
+SERVICES_RE = re.compile(r"^/api/records/(\d+)/service-entries$")
+SNAPSHOTS_RE = re.compile(r"^/api/records/(\d+)/snapshots$")
+READINESS_RE = re.compile(r"^/api/records/(\d+)/readiness$")
+DISPUTE_RE = re.compile(r"^/api/disputes/(\d+)/(accept|decide)$")
+AMENDMENT_CONFIRM_RE = re.compile(r"^/api/amendments/(\d+)/confirm$")
+MAKEUP_CONFIRM_RE = re.compile(r"^/api/makeup/(\d+)/confirm$")
+BATCH_RE = re.compile(r"^/api/batches/([A-Za-z0-9._:-]+)$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -26,7 +35,13 @@ def make_handler(service: Any, static_dir: Path):
             role = self.headers.get("X-Role", "").strip()
             if not user_id or not role:
                 raise PermissionDenied("缺少X-User-Id或X-Role")
-            return Actor(user_id=user_id, role=role, organization=self.headers.get("X-Org", ""))
+            raw_scopes = self.headers.get("X-Scopes", "").strip()
+            scopes = tuple(item.strip() for item in re.split(r"[,\s]+", raw_scopes) if item.strip())
+            return Actor(user_id=user_id, role=role, organization=self.headers.get("X-Org", ""), scopes=scopes)
+
+        def _batch_id(self) -> Optional[str]:
+            value = self.headers.get("X-Batch-Id", "").strip()
+            return value or None
 
         def _body(self) -> Dict[str, Any]:
             try:
@@ -57,9 +72,19 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                payload = {"error": exc.code, "message": str(exc)}
+                if getattr(exc, "details", None):
+                    payload["details"] = exc.details
+                self._send(exc.status, payload)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
+
+        @staticmethod
+        def _version(body: Dict[str, Any]) -> int:
+            version = body.get("expected_version")
+            if not isinstance(version, int):
+                raise ValidationError("expected_version必须是整数")
+            return version
 
         def do_GET(self) -> None:
             try:
@@ -71,21 +96,47 @@ def make_handler(service: Any, static_dir: Path):
                     page = (static_dir / "index.html").read_bytes()
                     self._send(200, page, "text/html; charset=utf-8")
                     return
+                actor = self._actor()
                 if parsed.path == "/api/records":
                     query = parse_qs(parsed.query)
-                    records = service.list_records(self._actor(), state=query.get("state", [None])[0], limit=int(query.get("limit", ["100"])[0]))
+                    records = service.list_records(actor, state=query.get("state", [None])[0],
+                                                   limit=int(query.get("limit", ["100"])[0]))
                     self._send(200, {"items": records})
                     return
                 match = RECORD_RE.match(parsed.path)
                 if match:
-                    self._send(200, service.get_record(self._actor(), int(match.group(1))))
+                    self._send(200, service.get_record(actor, int(match.group(1))))
                     return
                 match = AUDIT_RE.match(parsed.path)
                 if match:
-                    self._send(200, {"items": service.timeline(self._actor(), int(match.group(1)))})
+                    self._send(200, {"items": service.timeline(actor, int(match.group(1)))})
+                    return
+                match = DISPUTES_RE.match(parsed.path)
+                if match:
+                    self._send(200, {"items": service.list_disputes(actor, int(match.group(1)))})
+                    return
+                match = AMENDMENTS_RE.match(parsed.path)
+                if match:
+                    self._send(200, {"items": service.list_amendments(actor, int(match.group(1)))})
+                    return
+                match = SERVICES_RE.match(parsed.path)
+                if match:
+                    self._send(200, {"items": service.service_entries(actor, int(match.group(1)))})
+                    return
+                match = SNAPSHOTS_RE.match(parsed.path)
+                if match:
+                    self._send(200, {"items": service.snapshots(actor, int(match.group(1)))})
+                    return
+                match = READINESS_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.readiness(actor, int(match.group(1))))
+                    return
+                match = BATCH_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_batch(actor, match.group(1)))
                     return
                 if parsed.path == "/api/stats":
-                    self._send(200, service.stats(self._actor()))
+                    self._send(200, service.stats(actor))
                     return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:
@@ -95,17 +146,51 @@ def make_handler(service: Any, static_dir: Path):
             try:
                 parsed = urlparse(self.path)
                 body = self._body()
+                actor = self._actor()
+                batch_id = self._batch_id()
                 if parsed.path == "/api/records":
-                    record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
+                    record = service.create(actor, body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:
-                    version = body.get("expected_version")
-                    if not isinstance(version, int):
-                        raise ValidationError("expected_version必须是整数")
-                    record = service.act(self._actor(), int(match.group(1)), version, match.group(2), body.get("data", {}))
+                    record = service.act(actor, int(match.group(1)), self._version(body),
+                                         match.group(2), body.get("data", {}), batch_id)
                     self._send(200, record)
+                    return
+                match = DISPUTES_RE.match(parsed.path)
+                if match:
+                    result = service.file_dispute(actor, int(match.group(1)), self._version(body),
+                                                  body.get("data", {}), batch_id)
+                    self._send(201, result)
+                    return
+                match = AMENDMENTS_RE.match(parsed.path)
+                if match:
+                    result = service.propose_amendment(actor, int(match.group(1)), self._version(body),
+                                                       body.get("data", {}), batch_id)
+                    self._send(201, result)
+                    return
+                match = DISPUTE_RE.match(parsed.path)
+                if match:
+                    dispute_id = int(match.group(1))
+                    if match.group(2) == "accept":
+                        result = service.accept_dispute(actor, dispute_id, batch_id)
+                    else:
+                        result = service.decide_dispute(actor, dispute_id, body.get("data", {}), batch_id)
+                    self._send(200, result)
+                    return
+                match = AMENDMENT_CONFIRM_RE.match(parsed.path)
+                if match:
+                    expected = body.get("expected_version")
+                    if expected is not None and not isinstance(expected, int):
+                        raise ValidationError("expected_version必须是整数")
+                    result = service.confirm_amendment(actor, int(match.group(1)), expected, batch_id)
+                    self._send(200, result)
+                    return
+                match = MAKEUP_CONFIRM_RE.match(parsed.path)
+                if match:
+                    result = service.confirm_makeup(actor, int(match.group(1)), body.get("data", {}), batch_id)
+                    self._send(200, result)
                     return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:

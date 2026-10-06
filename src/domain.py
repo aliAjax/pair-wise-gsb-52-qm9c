@@ -1,11 +1,15 @@
 """领域基础类型与输入校验。"""
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class DomainError(Exception):
     status = 400
     code = "domain_error"
+
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
 
 
 class ValidationError(DomainError):
@@ -33,6 +37,7 @@ class Actor:
     user_id: str
     role: str
     organization: str = ""
+    scopes: Optional[Tuple[str, ...]] = None
 
 
 def text(data: Dict[str, Any], key: str) -> str:

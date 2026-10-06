@@ -3,31 +3,214 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>特殊教育支持计划合规</title>
+  <title>特殊教育支持计划合规 · 争议处理链</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #17212b; }
-    main { max-width: 960px; margin: auto; }
-    button { padding: .55rem .9rem; cursor: pointer; }
-    pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; }
-    .row { display: flex; gap: 1rem; align-items: center; }
+    main { max-width: 1080px; margin: auto; }
+    button { padding: .5rem .85rem; cursor: pointer; border: 1px solid #3b6fae; background: #3b6fae; color: #fff; border-radius: 6px; }
+    button.secondary { background: #fff; color: #3b6fae; }
+    pre { background: #f4f6f8; padding: 1rem; overflow: auto; border-radius: 8px; min-height: 120px; }
+    .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: .5rem 0; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .card { border: 1px solid #d8dee6; border-radius: 10px; padding: 1rem; }
+    h2 { font-size: 1.05rem; margin: 0 0 .6rem; }
+    input, textarea, select { width: 100%; box-sizing: border-box; padding: .4rem .5rem; margin: .25rem 0; border: 1px solid #c3cbd4; border-radius: 6px; font-family: inherit; }
+    .conflict { border-left: 4px solid #d45b5b; background: #fdf1f1; padding: .6rem .8rem; border-radius: 0 6px 6px 0; }
+    .ok { border-left: 4px solid #3f9d62; background: #eff8f2; padding: .6rem .8rem; border-radius: 0 6px 6px 0; }
+    .muted { color: #66737f; font-size: .85rem; }
+    label { font-size: .82rem; color: #43505c; }
   </style>
 </head>
 <body>
 <main>
-  <h1>特殊教育支持计划合规</h1>
-  <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
-  <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
-  <pre id="output">点击上方按钮读取服务状态。</pre>
+  <h1>特殊教育支持计划合规 · 争议处理链</h1>
+  <p class="muted">
+    支持计划 → 家长异议（受理冻结未确认修订）→ 计划修订（版本快照）→ 复核裁定（授权范围）。
+    所有写操作带 <code>X-Batch-Id</code>，失败后同批次重试，补服务不重复生成。
+  </p>
+
+  <div class="row">
+    <label>身份
+      <select id="actor" style="width:auto">
+        <option value="parent_rep|school-a|">监护人代表</option>
+        <option value="case_manager|school-a|">个案管理员</option>
+        <option value="specialist|school-a|">服务专员</option>
+        <option value="administrator|school-a|">行政管理员</option>
+        <option value="reviewer|school-a|dispute:uphold dispute:reject">复核人（uphold+reject）</option>
+        <option value="reviewer|school-a|dispute:reject">复核人（仅reject）</option>
+        <option value="reviewer|school-b|dispute:uphold">复核人（他校）</option>
+      </select>
+    </label>
+    <label>批次号 <input id="batch" style="width:220px" placeholder="留空自动生成"></label>
+    <button class="secondary" onclick="newBatch()">换新批次号</button>
+    <button class="secondary" onclick="loadRecords()">加载记录</button>
+    <button class="secondary" onclick="loadStats()">状态统计</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>记录与动作</h2>
+      <label>记录ID <input id="rid" type="number" min="1" style="width:110px"></label>
+      <label>expected_version <input id="version" type="number" style="width:110px"></label>
+      <div class="row">
+        <button onclick="act('consent', {guardian_confirmed:true, consent_scope:'全部服务'})">同意</button>
+        <button onclick="act('withdraw_consent', {guardian_confirmed:true, reason:'撤回'})">撤回同意</button>
+        <button onclick="act('activate', {})">生效</button>
+        <button onclick="act('log_service', {session_minutes:60, provider:'SP-X'})">登记60分钟</button>
+        <button onclick="act('review', {progress_note:'复查'})">复查</button>
+        <button class="secondary" onclick="act('close', {review_complete:true})">结案</button>
+      </div>
+      <div class="row"><button class="secondary" onclick="getReadiness()">结案缺口检查</button>
+        <button class="secondary" onclick="getAudit()">审计时间线</button>
+        <button class="secondary" onclick="getServices()">服务台账</button>
+        <button class="secondary" onclick="getSnapshots()">版本快照</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>两个窗口（可同时提交）</h2>
+      <label>异议理由（家长窗口）<input id="disputeReason" value="服务缺口未补齐"></label>
+      <button onclick="fileDispute()">提交异议</button>
+      <hr>
+      <label>修订原因（学校窗口）<input id="amendReason" value="增加服务时长"></label>
+      <label>新目标（逗号分隔）<input id="amendGoals" value="目标A,目标B"></label>
+      <label>新计划分钟数 <input id="amendMinutes" type="number" value="720"></label>
+      <div class="row">
+        <button onclick="proposeAmendment()">提交修订草案</button>
+        <button class="secondary" onclick="getAmendments()">查看修订</button>
+      </div>
+      <label>确认修订（填修订ID）<input id="amendId" type="number" style="width:110px"></label>
+      <button onclick="confirmAmendment()">确认修订（升版+补服务重算）</button>
+    </div>
+
+    <div class="card">
+      <h2>争议处理</h2>
+      <label>争议ID <input id="did" type="number" style="width:110px"></label>
+      <div class="row">
+        <button onclick="acceptDispute()">受理（冻结未确认修订）</button>
+        <button onclick="getDisputes()">查看争议</button>
+      </div>
+      <label>裁定说明 <input id="decisionNote" value="复核意见"></label>
+      <div class="row">
+        <button onclick="decide('upheld')">裁定成立（修订作废）</button>
+        <button onclick="decide('rejected')">裁定不成立（解冻）</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>补服务</h2>
+      <label>补服务记录ID <input id="mid" type="number" style="width:110px"></label>
+      <div class="row">
+        <button onclick="confirmMakeup()">确认补服务（保留当时快照）</button>
+        <button class="secondary" onclick="getServices()">刷新台账</button>
+      </div>
+      <p class="muted">计划更新或同意撤回时：未开始的补服务自动失效（void）并重算；已确认记录保留其 basis_version 快照。</p>
+    </div>
+  </div>
+
+  <div id="notice"></div>
+  <pre id="output">就绪。先"加载记录"，再选择记录ID和版本号操作。</pre>
 </main>
 <script>
-const headers = {"X-User-Id":"demo-admin","X-Role":"admin","X-Org":"demo"};
-async function show(path) {
-  const response = await fetch(path, {headers});
-  const data = await response.json();
-  document.getElementById("output").textContent = JSON.stringify(data, null, 2);
+let lastConflictDraft = null;
+function actorHeaders() {
+  const [role, org, scopes] = document.getElementById("actor").value.split("|");
+  const headers = {"Content-Type": "application/json", "X-User-Id": "web-" + role, "X-Role": role, "X-Org": org};
+  if (scopes) headers["X-Scopes"] = scopes;
+  const batch = document.getElementById("batch").value.trim();
+  if (batch) headers["X-Batch-Id"] = batch;
+  return headers;
 }
-document.getElementById("load").onclick = () => show("/api/records?limit=20");
-document.getElementById("stats").onclick = () => show("/api/stats");
+function newBatch() {
+  document.getElementById("batch").value = "batch-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+}
+function show(data) { document.getElementById("output").textContent = JSON.stringify(data, null, 2); }
+function notice(kind, html) {
+  const el = document.getElementById("notice");
+  el.innerHTML = '<div class="' + kind + '">' + html + '</div>';
+}
+async function call(method, path, body, {keepDraft} = {}) {
+  try {
+    const resp = await fetch(path, {method, headers: actorHeaders(), body: JSON.stringify(body || {})});
+    const data = await resp.json();
+    if (!resp.ok) {
+      // 版本冲突：后到者的填写内容保留在 details.draft 中，前端不清空表单
+      if (resp.status === 409 && data.details && data.details.current_version) {
+        document.getElementById("version").value = data.details.current_version;
+        const draftText = data.details.draft ? "<pre style='margin:.4rem 0'>" + JSON.stringify(data.details.draft, null, 2) + "</pre>" : "";
+        notice("conflict", "<b>版本冲突</b>：对方已先提交，当前版本 v" + data.details.current_version +
+          "。您填写的内容已保留（可调整后用新版本重试）：" + draftText);
+        lastConflictDraft = data.details.draft;
+      } else if (data.details && data.details.blockers) {
+        notice("conflict", "<b>结案被拦截</b>，缺口如下：<pre style='margin:.4rem 0'>" +
+          JSON.stringify(data.details.blockers, null, 2) + "</pre>");
+      } else if (data.details && data.details.recoverable) {
+        notice("conflict", "<b>写入中断，可恢复</b>：请用同一批次号 <code>" + data.details.batch_id + "</code> 重试（不会重复生成补服务）。");
+      } else {
+        notice("conflict", "<b>" + data.error + "</b>：" + data.message);
+      }
+      return data;
+    }
+    notice("ok", "操作成功。");
+    show(data);
+    return data;
+  } catch (e) {
+    notice("conflict", "请求失败：" + e);
+  }
+}
+const rid = () => parseInt(document.getElementById("rid").value, 10);
+const ver = () => parseInt(document.getElementById("version").value, 10);
+function loadRecords() { call("GET", "/api/records?limit=20").then(show); }
+function loadStats() { call("GET", "/api/stats").then(show); }
+function act(action, data) {
+  call("POST", `/api/records/${rid()}/actions/${action}`, {expected_version: ver(), data}).then(r => {
+    if (r && r.version) document.getElementById("version").value = r.version;
+  });
+}
+function fileDispute() {
+  call("POST", `/api/records/${rid()}/disputes`,
+    {expected_version: ver(), data: {reason: document.getElementById("disputeReason").value, detail: "网页提交"}}).then(r => {
+    if (r && r.record_version) document.getElementById("version").value = r.record_version;
+    if (r && r.dispute_id) document.getElementById("did").value = r.dispute_id;
+  });
+}
+function proposeAmendment() {
+  call("POST", `/api/records/${rid()}/amendments`,
+    {expected_version: ver(), data: {
+      amendment_reason: document.getElementById("amendReason").value,
+      updated_goals: document.getElementById("amendGoals").value.split(",").map(s => s.trim()).filter(Boolean),
+      service_minutes: parseInt(document.getElementById("amendMinutes").value, 10)
+    }}).then(r => {
+    if (r && r.record_version) document.getElementById("version").value = r.record_version;
+    if (r && r.amendment_id) document.getElementById("amendId").value = r.amendment_id;
+  });
+}
+function confirmAmendment() {
+  const id = parseInt(document.getElementById("amendId").value, 10);
+  call("POST", `/api/amendments/${id}/confirm`, {expected_version: ver()}).then(r => {
+    if (r && r.version) document.getElementById("version").value = r.version;
+  });
+}
+function acceptDispute() {
+  call("POST", `/api/disputes/${parseInt(document.getElementById("did").value, 10)}/accept`, {});
+}
+function decide(decision) {
+  call("POST", `/api/disputes/${parseInt(document.getElementById("did").value, 10)}/decide`,
+    {data: {decision, decision_note: document.getElementById("decisionNote").value}}).then(r => {
+    if (r && r.record_version) document.getElementById("version").value = r.record_version;
+  });
+}
+function confirmMakeup() {
+  call("POST", `/api/makeup/${parseInt(document.getElementById("mid").value, 10)}/confirm`,
+    {data: {provider: "SP-web"}}).then(r => { if (r && r.record_version) document.getElementById("version").value = r.record_version; });
+}
+function getDisputes() { call("GET", `/api/records/${rid()}/disputes`).then(show); }
+function getAmendments() { call("GET", `/api/records/${rid()}/amendments`).then(show); }
+function getServices() { call("GET", `/api/records/${rid()}/service-entries`).then(show); }
+function getSnapshots() { call("GET", `/api/records/${rid()}/snapshots`).then(show); }
+function getAudit() { call("GET", `/api/records/${rid()}/audit`).then(show); }
+function getReadiness() { call("GET", `/api/records/${rid()}/readiness`).then(show); }
+newBatch();
 </script>
 </body>
 </html>
