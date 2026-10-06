@@ -17,6 +17,7 @@
   <h1>特殊教育支持计划合规</h1>
   <p>最小演示页。完整业务流程通过README中的JSON接口调用。</p>
   <div class="row"><button id="load">加载记录</button><button id="stats">查看状态统计</button></div>
+  <div class="row"><button id="disputes">异议链明细</button><button id="gaps">结案缺口</button></div>
   <pre id="output">点击上方按钮读取服务状态。</pre>
 </main>
 <script>
@@ -26,8 +27,19 @@ async function show(path) {
   const data = await response.json();
   document.getElementById("output").textContent = JSON.stringify(data, null, 2);
 }
+async function firstRecordPath(suffix) {
+  const response = await fetch("/api/records?limit=1", {headers});
+  const data = await response.json();
+  if (!data.items || !data.items.length) {
+    document.getElementById("output").textContent = "暂无记录";
+    return;
+  }
+  show(`/api/records/${data.items[0].id}/${suffix}`);
+}
 document.getElementById("load").onclick = () => show("/api/records?limit=20");
 document.getElementById("stats").onclick = () => show("/api/stats");
+document.getElementById("disputes").onclick = () => firstRecordPath("disputes");
+document.getElementById("gaps").onclick = () => firstRecordPath("gaps");
 </script>
 </body>
 </html>

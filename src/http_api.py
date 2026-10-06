@@ -12,6 +12,8 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+SUBCOLLECTION_RE = re.compile(r"^/api/records/(\d+)/(disputes|amendments|service-rows|drafts|gaps)$")
+BATCH_RE = re.compile(r"^/api/records/(\d+)/batch$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -57,7 +59,10 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                payload: Dict[str, Any] = {"error": exc.code, "message": str(exc)}
+                if getattr(exc, "details", None):
+                    payload["details"] = exc.details
+                self._send(exc.status, payload)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
 
@@ -84,6 +89,22 @@ def make_handler(service: Any, static_dir: Path):
                 if match:
                     self._send(200, {"items": service.timeline(self._actor(), int(match.group(1)))})
                     return
+                match = SUBCOLLECTION_RE.match(parsed.path)
+                if match:
+                    record_id = int(match.group(1))
+                    kind = match.group(2)
+                    query = parse_qs(parsed.query)
+                    if kind == "disputes":
+                        self._send(200, {"items": service.list_disputes(self._actor(), record_id)})
+                    elif kind == "amendments":
+                        self._send(200, {"items": service.list_amendments(self._actor(), record_id)})
+                    elif kind == "service-rows":
+                        self._send(200, {"items": service.list_service_rows(self._actor(), record_id)})
+                    elif kind == "drafts":
+                        self._send(200, {"items": service.list_drafts(self._actor(), record_id, query.get("kind", [None])[0])})
+                    else:
+                        self._send(200, {"items": service.gaps(self._actor(), record_id)})
+                    return
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
                     return
@@ -98,6 +119,17 @@ def make_handler(service: Any, static_dir: Path):
                 if parsed.path == "/api/records":
                     record = service.create(self._actor(), body.get("reference", ""), body.get("data", {}))
                     self._send(201, record)
+                    return
+                match = BATCH_RE.match(parsed.path)
+                if match:
+                    result = service.run_batch(
+                        self._actor(),
+                        int(match.group(1)),
+                        body.get("expected_version"),
+                        body.get("batch_key", ""),
+                        body.get("operations", []),
+                    )
+                    self._send(200, result)
                     return
                 match = ACTION_RE.match(parsed.path)
                 if match:
